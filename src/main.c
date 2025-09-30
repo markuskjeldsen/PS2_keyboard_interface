@@ -172,17 +172,6 @@ int pwm1_set_frequency(uint32_t freq_hz)
 }
 
 
-
-
-
-static void uart_put_hex(uint8_t b){
-  const char h[]="0123456789ABCDEF";
-  uart_putc(h[b>>4]);
-  uart_putc(h[b&0xF]);
-  uart_putc(' ');
-}
-
-
 int main(void){
 
 	ps2_init();
