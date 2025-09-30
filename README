@@ -1,0 +1,6 @@
+pins used:
+	PE4 as interrupt for PS/2
+	PE5 as data pin for PS/2
+	
+	PE1 as TX for uart with baud 250_000
+
