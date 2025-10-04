@@ -1,7 +1,7 @@
 # NOTE: Recipe lines must start with a real TAB character.
 
 # ---- Project config ----
-PROJECT      := atmega64_blink
+PROJECT      := atmega64_PS2_interface  # change to your project name
 MCU          := atmega64            # same for ATmega64L
 F_CPU        := 8000000           # adjust to your clock
 BAUD         := 250000
@@ -15,25 +15,49 @@ CC           := avr-gcc
 OBJCOPY      := avr-objcopy
 OBJDUMP      := avr-objdump
 SIZE         := avr-size
-AVRDUDE      := avrdude
+AVRDUDE      := avrde
 
 # ---- Paths ----
 SRC_DIR      := src
-INC_DIR      := include
+LIB_ROOT_DIR := library
 BUILD_DIR    := build
 
+# Automatically find all subdirectories under 'library/'
+# This assumes each library resides in its own subdirectory directly under 'library/'
+LIB_SUBDIRS  := $(wildcard $(LIB_ROOT_DIR)/*)
+
+# All directories where the compiler should search for header files
+# (src/ if main.c has its own header, and all library subdirectories)
+ALL_INCLUDE_DIRS := $(SRC_DIR) $(LIB_SUBDIRS)
+
 # ---- Sources ----
-SRC          := $(wildcard $(SRC_DIR)/*.c)
-OBJ          := $(patsubst $(SRC_DIR)/%.c,$(BUILD_DIR)/%.o,$(SRC))
+# Source files from the main src directory
+MAIN_SRCS    := $(wildcard $(SRC_DIR)/*.c)
+# Source files from all library subdirectories
+LIB_SRCS     := $(foreach dir, $(LIB_SUBDIRS), $(wildcard $(dir)/*.c))
+
+# Combine all source files
+ALL_SRCS     := $(MAIN_SRCS) $(LIB_SRCS)
+
+# Generate a list of object files, placing them all in the BUILD_DIR.
+# We use $(notdir ...) to get just the filename, avoiding path conflicts in build/
+OBJ          := $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(ALL_SRCS)))
 DEP          := $(OBJ:.o=.d)
 
 # ---- Flags ----
 CSTD         := gnu11
-CFLAGS := -mmcu=$(MCU) -DF_CPU=$(F_CPU) -DBAUD=$(BAUD) -std=$(CSTD) -Os \
+# Transform ALL_INCLUDE_DIRS into -I flags for the compiler
+INC_FLAGS    := $(addprefix -I, $(ALL_INCLUDE_DIRS))
+
+CFLAGS       := -mmcu=$(MCU) -DF_CPU=$(F_CPU) -DBAUD=$(BAUD) -std=$(CSTD) -Os \
           -Wall -Wextra -Wundef -Wstrict-prototypes -fdata-sections -ffunction-sections \
-          -MMD -MP -I$(INC_DIR)
+          -MMD -MP $(INC_FLAGS) # INC_FLAGS now handles all include paths
 LDFLAGS      := -mmcu=$(MCU) -Wl,--gc-sections
 AVRDUDE_FLAGS:= -p $(AVRDUDE_MCU) -c $(PROGRAMMER) $(AVRDUDE_SCK)
+
+# ---- VPATH (Virtual Path) ----
+# make will look for prerequisites (like .c files) in these directories
+VPATH        := $(SRC_DIR):$(LIB_SUBDIRS)
 
 # ---- Targets ----
 .PHONY: all flash fuses fuse-read clean size disasm
@@ -43,7 +67,9 @@ all: $(BUILD_DIR)/$(PROJECT).hex
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c | $(BUILD_DIR)
+# Pattern rule for compiling any .c file into a .o file in the build directory.
+# VPATH will ensure make finds the correct .c file in src/ or library/ subdirectories.
+$(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/$(PROJECT).elf: $(OBJ)
@@ -77,4 +103,3 @@ clean:
 	@rm -rf $(BUILD_DIR)
 
 -include $(DEP)
-
