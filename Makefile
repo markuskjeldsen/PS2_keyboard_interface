@@ -1,7 +1,7 @@
 # NOTE: Recipe lines must start with a real TAB character.
 
 # ---- Project config ----
-PROJECT      := atmega64_PS2_interface  # change to your project name
+PROJECT      := atmega64_blink
 MCU          := atmega64            # same for ATmega64L
 F_CPU        := 8000000           # adjust to your clock
 BAUD         := 250000
@@ -15,91 +15,143 @@ CC           := avr-gcc
 OBJCOPY      := avr-objcopy
 OBJDUMP      := avr-objdump
 SIZE         := avr-size
-AVRDUDE      := avrde
+AVRDUDE      := avrdude
 
 # ---- Paths ----
-SRC_DIR      := src
-LIB_ROOT_DIR := library
+# The main source directory for your application code
+PROJECT_SRC_DIR := src
+# Directory for common, project-wide headers (optional, but good practice)
+INC_DIR      := include
+# Directory for build artifacts (.o, .d files)
 BUILD_DIR    := build
+# Directory for final output files (.elf, .hex)
+BIN_DIR      := bin
 
-# Automatically find all subdirectories under 'library/'
-# This assumes each library resides in its own subdirectory directly under 'library/'
-LIB_SUBDIRS  := $(wildcard $(LIB_ROOT_DIR)/*)
+# ---- Library Configuration (Expandable) ----
+# List all directories containing library source and header files.
+# To add a new library module, create its directory (e.g., library/spi)
+# and add it to this list. Headers in these directories will also be
+# automatically added to the include path.
+LIBRARY_SRC_DIRS := library/ps2 \
+                    library/uart
+# NOTE: If you add `library/spi` here, it will automatically find `library/spi/spi.c`
+# and add `library/spi` to the compiler's include search paths.
 
-# All directories where the compiler should search for header files
-# (src/ if main.c has its own header, and all library subdirectories)
-ALL_INCLUDE_DIRS := $(SRC_DIR) $(LIB_SUBDIRS)
+# ---- Sources and Objects ----
+# Combine project source directory and library source directories for source discovery
+ALL_SOURCE_SEARCH_DIRS := $(PROJECT_SRC_DIR) $(LIBRARY_SRC_DIRS)
 
-# ---- Sources ----
-# Source files from the main src directory
-MAIN_SRCS    := $(wildcard $(SRC_DIR)/*.c)
-# Source files from all library subdirectories
-LIB_SRCS     := $(foreach dir, $(LIB_SUBDIRS), $(wildcard $(dir)/*.c))
+# Find all C source files in the specified directories
+# SRCS will contain paths like: src/main.c library/ps2/ps2.c library/uart/uart.c
+SRCS := $(foreach dir, $(ALL_SOURCE_SEARCH_DIRS), $(wildcard $(dir)/*.c))
 
-# Combine all source files
-ALL_SRCS     := $(MAIN_SRCS) $(LIB_SRCS)
+# Generate object file paths within the build directory, preserving subdirectory structure
+# e.g., src/main.c -> build/src/main.o
+# e.g., library/ps2/ps2.c -> build/library/ps2/ps2.o
+OBJS := $(patsubst %.c, $(BUILD_DIR)/%.o, $(SRCS))
 
-# Generate a list of object files, placing them all in the BUILD_DIR.
-# We use $(notdir ...) to get just the filename, avoiding path conflicts in build/
-OBJ          := $(patsubst %.c,$(BUILD_DIR)/%.o,$(notdir $(ALL_SRCS)))
-DEP          := $(OBJ:.o=.d)
+# Generate dependency file paths (used by -MMD/-MP)
+DEPS := $(patsubst %.c, $(BUILD_DIR)/%.d, $(SRCS))
 
 # ---- Flags ----
 CSTD         := gnu11
-# Transform ALL_INCLUDE_DIRS into -I flags for the compiler
-INC_FLAGS    := $(addprefix -I, $(ALL_INCLUDE_DIRS))
-
-CFLAGS       := -mmcu=$(MCU) -DF_CPU=$(F_CPU) -DBAUD=$(BAUD) -std=$(CSTD) -Os \
+# Compiler flags:
+# -mmcu=$(MCU)           : Specify microcontroller
+# -DF_CPU=$(F_CPU)       : Define clock frequency
+# -DBAUD=$(BAUD)         : Define baud rate for UART (if used)
+# -std=$(CSTD)           : C standard (e.g., C11)
+# -Os                    : Optimize for size
+# -Wall -Wextra          : Enable all common warnings
+# -Wundef -Wstrict-prototypes -fdata-sections -ffunction-sections : More warnings and optimization
+# -MMD -MP               : Generate dependency files for efficient incremental builds
+# -I$(INC_DIR)           : Include path for project-wide headers
+# -I$(dir)               : Include paths for library-specific headers
+ALL_INCLUDE_FLAGS := -I$(INC_DIR) $(foreach dir, $(LIBRARY_SRC_DIRS), -I$(dir)) $(if $(wildcard $(PROJECT_SRC_DIR)), -I$(PROJECT_SRC_DIR))
+CFLAGS := -mmcu=$(MCU) -DF_CPU=$(F_CPU) -DBAUD=$(BAUD) -std=$(CSTD) -Os \
           -Wall -Wextra -Wundef -Wstrict-prototypes -fdata-sections -ffunction-sections \
-          -MMD -MP $(INC_FLAGS) # INC_FLAGS now handles all include paths
+          -MMD -MP $(ALL_INCLUDE_FLAGS)
+
+# Linker flags:
+# -mmcu=$(MCU)           : Specify microcontroller
+# -Wl,--gc-sections      : Garbage collect unused sections for smaller code size
 LDFLAGS      := -mmcu=$(MCU) -Wl,--gc-sections
+
+# AVRDUDE flags:
+# -p $(AVRDUDE_MCU)      : Specify device ID for avrdude
+# -c $(PROGRAMMER)       : Specify programmer type
+# $(AVRDUDE_SCK)         : Optional: Slow down SCK if needed
 AVRDUDE_FLAGS:= -p $(AVRDUDE_MCU) -c $(PROGRAMMER) $(AVRDUDE_SCK)
 
-# ---- VPATH (Virtual Path) ----
-# make will look for prerequisites (like .c files) in these directories
-VPATH        := $(SRC_DIR):$(LIB_SUBDIRS)
-
 # ---- Targets ----
-.PHONY: all flash fuses fuse-read clean size disasm
+.PHONY: all flash fuses fuse-read clean size disasm rebuild
 
-all: $(BUILD_DIR)/$(PROJECT).hex
+# Default target: build the program
+all: $(BIN_DIR)/$(PROJECT).hex
 
+# Ensure build and bin directories exist
 $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
+$(BIN_DIR):
+	@mkdir -p $(BIN_DIR)
 
-# Pattern rule for compiling any .c file into a .o file in the build directory.
-# VPATH will ensure make finds the correct .c file in src/ or library/ subdirectories.
+# Rule to compile each C source file into an object file
+# This rule dynamically creates subdirectories in BUILD_DIR if necessary
+# e.g., creates build/src, build/library/ps2, etc.
 $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
+	@mkdir -p $(@D) # Create necessary subdirectories in build/
+	@echo "Compiling $<..."
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/$(PROJECT).elf: $(OBJ)
+# Rule to link the object files into the final ELF executable
+$(BIN_DIR)/$(PROJECT).elf: $(OBJS) | $(BIN_DIR)
+	@echo "Linking $(PROJECT).elf..."
 	$(CC) $(LDFLAGS) $^ -o $@
 
-$(BUILD_DIR)/$(PROJECT).hex: $(BUILD_DIR)/$(PROJECT).elf
+# Rule to convert the ELF file to an Intel HEX file
+$(BIN_DIR)/$(PROJECT).hex: $(BIN_DIR)/$(PROJECT).elf
+	@echo "Creating $(PROJECT).hex..."
 	$(OBJCOPY) -O ihex -R .eeprom $< $@
-	@$(SIZE) -C --mcu=$(MCU) $(BUILD_DIR)/$(PROJECT).elf
+	@echo "Memory usage for $(PROJECT):"
+	@$(SIZE) -C --mcu=$(MCU) $<
 
-size: $(BUILD_DIR)/$(PROJECT).elf
+# Display memory usage (flash, RAM)
+size: $(BIN_DIR)/$(PROJECT).elf
+	@echo "Memory usage for $(PROJECT):"
 	$(SIZE) -C --mcu=$(MCU) $<
 
-disasm: $(BUILD_DIR)/$(PROJECT).elf
-	$(OBJDUMP) -d $< > $(BUILD_DIR)/$(PROJECT).lst
-	@echo "Disassembly written to $(BUILD_DIR)/$(PROJECT).lst"
+# Generate disassembly listing
+disasm: $(BIN_DIR)/$(PROJECT).elf
+	@echo "Generating disassembly in $(BIN_DIR)/$(PROJECT).lst..."
+	$(OBJDUMP) -d $< > $(BIN_DIR)/$(PROJECT).lst
 
-flash: $(BUILD_DIR)/$(PROJECT).hex
+# Flash the program to the microcontroller
+flash: $(BIN_DIR)/$(PROJECT).hex
+	@echo "Flashing $(PROJECT).hex to $(MCU) via $(PROGRAMMER)..."
 	$(AVRDUDE) $(AVRDUDE_FLAGS) -U flash:w:$<:i
 
-# Read back fuse bytes (hex). ATmega64 has low and high fuses.
+# Read back fuse bytes (hex). ATmega64 has low, high, and extended fuses.
 fuse-read:
+	@echo "Reading fuse bytes from $(MCU) via $(PROGRAMMER)..."
 	$(AVRDUDE) $(AVRDUDE_FLAGS) -U lfuse:r:-:h -U hfuse:r:-:h -U efuse:r:-:h
 
 # WRITE FUSES CAREFULLY — fill in values from a fuse calculator for your clock/setup.
 # Example placeholders shown below; replace 0x?? with your values.
 fuses:
-	@echo "Edit the 'fuses' target in the Makefile with correct values before using!"
+	@echo "----------------------------------------------------------------------"
+	@echo "WARNING: Editing fuses can brick your MCU if done incorrectly."
+	@echo "         Edit the 'fuses' target in the Makefile with correct values!"
+	@echo "----------------------------------------------------------------------"
 	$(AVRDUDE) $(AVRDUDE_FLAGS) -U lfuse:w:0xe4:m -U hfuse:w:0xd8:m
 
+# Clean target: remove all build artifacts and output files
 clean:
-	@rm -rf $(BUILD_DIR)
+	@echo "Cleaning build and output directories..."
+	$(RM) -r $(BUILD_DIR) $(BIN_DIR)
 
--include $(DEP)
+# Rebuild target: clean and then build everything
+rebuild: clean all
+
+# Include automatically generated dependency files
+# These files list the header dependencies for each .c file
+# This ensures that if a header changes, only affected .c files are recompiled
+-include $(DEPS)
