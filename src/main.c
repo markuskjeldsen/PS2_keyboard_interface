@@ -185,11 +185,9 @@ int main(void){
 			uart_putc(c);
 		}
         // Small idle delay is OK
-        _delay_ms(3);
+        _delay_ms(10);
 	}
 }
-
-
     /*
     if(pwm1_init(20000U) == 0) {
 	pwm1_set_duty_percent(40);
